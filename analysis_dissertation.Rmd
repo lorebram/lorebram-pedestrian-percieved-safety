@@ -1,0 +1,2238 @@
+```{r 1-Load Libraries} 
+library(sf)
+library(here)
+library(tidyverse)
+library(dplyr)
+library(tmap)
+library(XML)
+library(stringr)
+library(janitor)
+library(RColorBrewer)
+library(plyr)
+library(geojsonio)
+library(plotly)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sp)
+library(spdep)
+library(car)
+library(fs)
+library(ggplot2)
+library(performance)
+library(see)
+library(patchwork)
+library(leaps)
+library(caret)
+library(stats)
+library(ggcorrplot)
+library(psych)
+```
+
+
+```{r 2-Route - Load data}
+#read in route
+route_global <- st_read(here::here("data","route", "test_1.shp"))
+
+#read in route
+route <- st_read(here::here("data","route", "route_merged.shp"))%>%
+  st_transform(.,27700)
+                
+#read in route_line
+route_line <- st_read(here::here("data","route", "route_line_1.shp"))%>%
+  st_transform(.,27700)
+
+#read in route_line_hexa
+route_line_hexa <- st_read(here::here("data","route", "hexa_grid.shp"))%>%
+  st_transform(.,27700)
+
+#read in clip area
+clip_area_2 <- st_read(here::here("data","bg_map", "clip_area.shp"))%>%
+  st_transform(.,27700)
+
+#read in clip area
+clip_area <- st_read(here::here("data","bg_map", "clip_new.shp"))%>%
+  st_transform(.,27700)
+
+
+#resetting ID to be able to call the streets later on more easily 
+route_id <- tibble::rowid_to_column(route, "ID")
+#main_df <- cbind(route_id) / not sure what it is wait to see if needed
+
+tmap_mode ("plot") #"plot" if you want to make it normal
+tm_shape(route)+
+  tm_polygons(col = 'grey', alpha = 0.6)
+
+judd <- route %>%
+  filter(., layer=="judd")
+
+st_area(judd)
+
+```
+```{r Load base for map}
+#create copy of main df
+route_plot <- route_id
+#delete geometry column
+route_plot$geometry <- NULL
+route_plot$path <- NULL
+
+line_clipped <- st_read(here::here("data","route", "line_clipped.shp"))%>%
+  st_transform(.,27700)
+
+bldgs <- st_read(here::here("data","bg_map", "1gis_osm_buildings_a_free_1.shp"))%>%
+  st_transform(.,27700)
+
+bldgs_1 <- st_read(here::here("data","bg_map", "1gis_osm_pois_a_free_1.shp"))%>%
+  st_transform(.,27700)
+
+bldgs_2 <- st_read(here::here("data","bg_map", "1gis_osm_traffic_a_free_1.shp"))%>%
+  st_transform(.,27700)
+
+water <- st_read(here::here("data","bg_map", "1gis_osm_water_a_free_1.shp"))%>%
+  st_transform(.,27700)
+
+streets <- st_read(here::here("data","bg_map", "1gis_osm_roads_free_1.shp"))%>%
+  st_transform(.,27700)
+
+bg <- st_read(here::here("data","bg_map", "1gis_osm_places_a_free_1.shp"))%>%
+  st_transform(.,27700)
+
+parks <- st_read(here::here("data","bg_map", "parks.shp"))%>%
+  st_transform(.,27700)
+
+#change name of column
+colnames(line_clipped)[which(names(line_clipped) == "id")] <- "ID"
+
+line_clipped <- line_clipped %>% 
+  left_join(route_plot,
+            by = "ID")
+```
+
+
+```{r Streetscape and study area - Load Data}
+#read in dataset / streetwidth 
+st_layers(here::here("data","nicolas","streetspace_dataset_ldn.gpkg"))
+streetscape<- st_read(here::here("data","nicolas","streetspace_dataset_ldn.gpkg"))
+
+#setting streetscape inn British National Grid CRS match
+streetscapeProj <- streetscape %>%
+  st_transform(.,27700)
+
+#clip it to study area
+streetscapeProj_1 <- streetscapeProj[clip_area,]
+
+print(streetscapeProj)
+
+#read in london wards
+wards <- st_read(here::here("data","London-wards-2018", "London-wards-2018_ESRI", "London_Ward.shp"))
+
+#selecting study area
+camden_isl <- c('E05000141','E05000143', 'E05000368','E05000366', 'E05000370')
+camden_isl <- dplyr::filter (wards, GSS_CODE %in% camden_isl)
+
+plot(camden_isl)
+```
+
+```{r Fitbit - Load data}
+my_range <- 1:18
+my_range
+my_range_1 <- c(0,1,2,3,7,8,9,10,11,13,14,15,16,17,18,19,20)
+my_range_1
+for(i in my_range_1) {
+  #read fibit data
+  tmp <- read_csv(here::here("data","fitbit",(paste(i, ".csv", sep=""))),
+                                   na = c("NA", "n/a")) %>%
+    clean_names() 
+  #split Position column
+  tmp[c('x_pos', 'y_pos')] <- str_split_fixed(tmp$position, '-', 2)
+  #add negative to y_pos
+  tmp$y_pos <- sub("^", "-", tmp$y_pos)
+  #convert the CRS
+  tmp <- st_as_sf(tmp,
+                           coords = c("y_pos", "x_pos"),
+                           crs = 4326) %>%
+                    st_transform(.,27700)  #UK 27700
+  #save df with new name
+  oname = paste("pt_", i, sep="")
+  assign(oname, tmp)
+  
+}
+```
+
+
+```{r Defining Resting HR}
+#setting up the values
+
+pt_0_rhr = 68
+pt_1_rhr = 76
+pt_2_rhr = 68
+pt_3_rhr = 68
+pt_7_rhr = 74
+pt_8_rhr = 72
+pt_9_rhr = 68
+pt_10_rhr = 68
+pt_11_rhr = 72
+pt_13_rhr = 76
+pt_14_rhr = 72
+pt_15_rhr = 72
+pt_16_rhr = 55
+pt_17_rhr = 70
+pt_18_rhr = 64
+pt_19_rhr = 59
+pt_20_rhr = 75
+```
+
+
+```{r Fitbit - Load data pt.2 - HR}
+#variable created for df
+street_id <- c("test")
+
+# loop for heart rate and streets st_within + avg & RHR 
+#Participant 0
+avg_hr_00 <- c(0)
+pt_0_hr <- data.frame(street_id,avg_hr_00)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_0[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_0_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_0_hr <- pt_0_hr %>% add_row (street_id =oname, avg_hr_00 = avg)
+}
+#delete test row
+pt_0_hr = pt_0_hr[-c(1),]
+#reset index
+rownames(pt_0_hr) <- NULL
+
+#Participant 01
+avg_hr_01 <- c(0)
+pt_1_hr <- data.frame(street_id,avg_hr_01)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_1[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_1_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_1_hr <- pt_1_hr %>% add_row (street_id =oname, avg_hr_01 = avg)
+}
+pt_1_hr = pt_1_hr[-c(1),]
+rownames(pt_1_hr) <- NULL
+
+#Participant 02
+avg_hr_02 <- c(0)
+pt_2_hr <- data.frame(street_id,avg_hr_02)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_2[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_2_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_2_hr <- pt_2_hr %>% add_row (street_id =oname, avg_hr_02 = avg)
+}
+pt_2_hr = pt_2_hr[-c(1),]
+rownames(pt_2_hr) <- NULL
+
+#Participant 03
+avg_hr_03 <- c(0)
+pt_3_hr <- data.frame(street_id,avg_hr_03)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_3[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_3_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_3_hr <- pt_3_hr %>% add_row (street_id =oname, avg_hr_03 = avg)
+}
+pt_3_hr = pt_3_hr[-c(1),]
+rownames(pt_3_hr) <- NULL
+
+#Participant 07
+avg_hr_07 <- c(0)
+pt_7_hr <- data.frame(street_id,avg_hr_07)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_7[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_7_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_7_hr <- pt_7_hr %>% add_row (street_id =oname, avg_hr_07 = avg)
+}
+pt_7_hr = pt_7_hr[-c(1),]
+rownames(pt_7_hr) <- NULL
+
+#Participant 08
+avg_hr_08 <- c(0)
+pt_8_hr <- data.frame(street_id,avg_hr_08)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_8[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_8_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_8_hr <- pt_8_hr %>% add_row (street_id =oname, avg_hr_08 = avg)
+}
+pt_8_hr = pt_8_hr[-c(1),]
+rownames(pt_8_hr) <- NULL
+
+#Participant 09
+avg_hr_09 <- c(0)
+pt_9_hr <- data.frame(street_id,avg_hr_09)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_9[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_9_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_9_hr <- pt_9_hr %>% add_row (street_id =oname, avg_hr_09 = avg)
+}
+pt_9_hr = pt_9_hr[-c(1),]
+rownames(pt_9_hr) <- NULL
+
+#Participant 10
+avg_hr_10 <- c(0)
+pt_10_hr <- data.frame(street_id,avg_hr_10)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_10[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_10_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_10_hr <- pt_10_hr %>% add_row (street_id =oname, avg_hr_10 = avg)
+}
+pt_10_hr = pt_10_hr[-c(1),]
+rownames(pt_10_hr) <- NULL
+
+#Participant 11
+avg_hr_11 <- c(0)
+pt_11_hr <- data.frame(street_id,avg_hr_11)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_11[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_11_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_11_hr <- pt_11_hr %>% add_row (street_id =oname, avg_hr_11 = avg)
+}
+pt_11_hr = pt_11_hr[-c(1),]
+rownames(pt_11_hr) <- NULL
+
+#Participant 13
+avg_hr_13 <- c(0)
+pt_13_hr <- data.frame(street_id,avg_hr_13)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_13[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_13_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_13_hr <- pt_13_hr %>% add_row (street_id =oname, avg_hr_13 = avg)
+}
+pt_13_hr = pt_13_hr[-c(1),]
+rownames(pt_13_hr) <- NULL
+
+#Participant 14
+avg_hr_14 <- c(0)
+pt_14_hr <- data.frame(street_id,avg_hr_14)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_14[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_14_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_14_hr <- pt_14_hr %>% add_row (street_id =oname, avg_hr_14 = avg)
+}
+pt_14_hr = pt_14_hr[-c(1),]
+rownames(pt_14_hr) <- NULL
+
+#Participant 15
+avg_hr_15 <- c(0)
+pt_15_hr <- data.frame(street_id,avg_hr_15)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_15[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_15_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_15_hr <- pt_15_hr %>% add_row (street_id =oname, avg_hr_15 = avg)
+}
+pt_15_hr = pt_15_hr[-c(1),]
+rownames(pt_15_hr) <- NULL
+
+#Participant 16
+avg_hr_16 <- c(0)
+pt_16_hr <- data.frame(street_id,avg_hr_16)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_16[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_16_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_16_hr <- pt_16_hr %>% add_row (street_id =oname, avg_hr_16 = avg)
+}
+pt_16_hr = pt_16_hr[-c(1),]
+rownames(pt_16_hr) <- NULL
+
+#Participant 17
+avg_hr_17 <- c(0)
+pt_17_hr <- data.frame(street_id,avg_hr_17)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_17[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_17_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_17_hr <- pt_17_hr %>% add_row (street_id =oname, avg_hr_17 = avg)
+}
+pt_17_hr = pt_17_hr[-c(1),]
+rownames(pt_17_hr) <- NULL
+
+#Participant 18
+avg_hr_18 <- c(0)
+pt_18_hr <- data.frame(street_id,avg_hr_18)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_18[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_18_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_18_hr <- pt_18_hr %>% add_row (street_id =oname, avg_hr_18 = avg)
+}
+pt_18_hr = pt_18_hr[-c(1),]
+rownames(pt_18_hr) <- NULL
+
+#Participant 19
+avg_hr_19 <- c(0)
+pt_19_hr <- data.frame(street_id,avg_hr_19)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_19[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_19_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_19_hr <- pt_19_hr %>% add_row (street_id =oname, avg_hr_19 = avg)
+}
+pt_19_hr = pt_19_hr[-c(1),]
+rownames(pt_19_hr) <- NULL
+
+#Participant 20
+avg_hr_20 <- c(0)
+pt_20_hr <- data.frame(street_id,avg_hr_20)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging participant HR to the area of the street from the geometry
+    tmp_2 <- pt_20[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      avg <- mean(tmp_2$heart_rate_bpm) - pt_20_rhr
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_20_hr <- pt_20_hr %>% add_row (street_id =oname, avg_hr_20 = avg)
+}
+pt_20_hr = pt_20_hr[-c(1),]
+rownames(pt_20_hr) <- NULL
+
+
+
+
+#listOfDataframe = list(pt_0_hr, pt_1_hr, pt_2_hr)
+merged_hr_1 <- join_all(list(pt_0_hr, pt_1_hr, pt_2_hr,
+                             pt_3_hr, pt_7_hr, pt_8_hr,
+                             pt_9_hr, pt_10_hr, pt_11_hr,
+                             pt_13_hr, pt_14_hr, pt_15_hr,
+                             pt_16_hr, pt_17_hr, pt_18_hr,
+                             pt_19_hr, pt_20_hr), by='street_id', type='left')
+
+#get rid of NaN
+merged_hr_1[is.na(merged_hr_1)] = 0
+
+#add missing values by averaging out HR
+merged_hr_1[6, 3] = 37.6923
+merged_hr_1[7, 3] = 40.3846
+merged_hr_1[13, 3] = 33.2051
+merged_hr_1[16, 3] = 43.0769
+
+#create new df for only female and male data
+female_hr <- merged_hr_1
+male_hr <- merged_hr_1
+
+#subset data
+female_hr <- female_hr[,c("avg_hr_00","avg_hr_01","avg_hr_02","avg_hr_03","avg_hr_07",
+             "avg_hr_08", "avg_hr_13","avg_hr_20")] 
+
+male_hr <- male_hr[,c("avg_hr_09","avg_hr_10","avg_hr_11","avg_hr_14","avg_hr_15",
+             "avg_hr_16", "avg_hr_17","avg_hr_18","avg_hr_19")] 
+
+```
+
+```{r plot 1 participant}
+hr_palette_5 <- c("#2c7bb6","#abd9e9","#ffffbf","#fdae61","#d7191c")
+tmap_mode ("plot")
+tm_shape(pt_0)+
+  tm_dots("heart_rate_bpm", size= 0.01,palette = hr_palette_5)
+
+
+
+```
+
+
+
+```{r Average HR per street}
+#duplicate df
+merged_hr_2 <- merged_hr_1
+#delete the column with no numbers to calculate mean
+merged_hr_2$street_id <- NULL
+#add column to route_id
+route_id$means_HR <-apply(merged_hr_2,1,mean)
+#add female mean HR
+route_id$female_HR <-apply(female_hr,1,mean)
+#add male mean HR
+route_id$male_HR <-apply(male_hr,1,mean)
+
+```
+
+```{r Fitbit - Load data pt.3 - Altitude}
+#for this we only use participant 0 data assuming that all change in elevation is the same for all the participants 
+#variable created for df
+street_id <- c("test")
+
+# loop for altitude and streets st_within + avg & Altitude 
+#Participant 0
+elev_alt_00 <- c(0)
+pt_0_alt <- data.frame(street_id,elev_alt_00)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging walk altitude to the area of the street from the geometry
+    tmp_2 <- pt_0[street, , op = st_within]
+  #getting the average of the participant for each street minus resting HR
+      colMax <- max(tmp_2$altitude_meters, na.rm = TRUE)
+      colMin <- min(tmp_2$altitude_meters, na.rm = TRUE)
+      elev <- colMax - colMin
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   pt_0_alt <- pt_0_alt %>% add_row (street_id =oname, elev_alt_00 = elev)
+}
+#delete test row
+pt_0_alt = pt_0_alt[-c(1),]
+#reset index
+rownames(pt_0_alt) <- NULL
+
+#resetting ID to be able to call the streets later on more easily 
+pt_0_alt <- tibble::rowid_to_column(pt_0_alt, "ID")
+
+route_id <- route_id %>% 
+  left_join(pt_0_alt,
+            by = "ID")
+```
+
+```{r Area}
+route_id$area <- st_area(route_id)
+```
+
+```{r Streets sidewalk/street size}
+#define points of streetscape dataset (manual)
+
+streetcomplete <- c('60756','60763','60615','60614','60612', '60609',
+                    '61485','61492','61493','61474',
+                    '61652','61651','61650','61638','61639','61627',
+                    '61625','61622','61291','61290','61296',
+                    '61624','61615','61616','61620','61610','61614',
+                    '61626','61213',
+                    '61207','61208','61226','61227','61228','61225',
+                    '61197','61196','61193','61205','61648','61662',
+                    '61661', '61676', '61673', '61674')
+#create sf?
+streetcomplete_2 <- dplyr::filter (streetscapeProj, id %in% streetcomplete)
+
+tm_shape(route)+
+  tm_polygons(col="grey")+
+tm_shape(streetcomplete_2) +
+  tm_dots(col = "red", alpha = 1)
+```
+
+```{r Sidewalk}
+#variable created for df
+street_id <- c("test")
+
+# loop for altitude and streets st_within + avg & Altitude 
+#Participant 0
+sidewalk_size <- c(0)
+sidewalk_size_df <- data.frame(street_id,sidewalk_size)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging walk altitude to the area of the street from the geometry
+    tmp_2 <- streetcomplete_2[street,]
+    #getting the average of the sidewalk
+      avg <- mean(tmp_2$foW) 
+      oname = paste("street", x, sep="_")
+      sidewalk_size_df <- sidewalk_size_df %>% add_row (street_id =oname, sidewalk_size = avg)
+}
+#delete test row
+sidewalk_size_df = sidewalk_size_df[-c(1),]
+#reset index
+rownames(sidewalk_size_df) <- NULL
+
+
+route_id <- route_id %>% 
+  left_join(sidewalk_size_df,
+            by = "street_id")
+```
+
+```{r Street}
+
+#variable created for df
+street_id <- c("test")
+
+# loop for altitude and streets st_within + avg & Altitude 
+#Participant 0
+street_size <- c(0)
+street_size_df <- data.frame(street_id,street_size)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging walk altitude to the area of the street from the geometry
+    tmp_2 <- streetcomplete_2[street,]
+    #getting the average of the sidewalk
+      avg <- mean(tmp_2$caW) 
+      oname = paste("street", x, sep="_")
+      street_size_df <- street_size_df %>% add_row (street_id =oname, street_size = avg)
+}
+#delete test row
+street_size_df = street_size_df[-c(1),]
+#reset index
+rownames(street_size_df) <- NULL
+
+
+route_id <- route_id %>% 
+  left_join(street_size_df,
+            by = "street_id")
+
+#add missing measurements for Loxham #attention column order
+route_id[12, 15] = 12
+route_id[12, 16] = 0.0001
+
+```
+
+```{r Read in google survey}
+survey <- read_csv(here::here("data","survey", "WalkingSurveyQuestionnaire.csv"),
+                                   na = c("NA", "n/a")) %>%
+  clean_names()
+
+#create new df for only female and male data
+survey_female <- survey
+survey_male <- survey
+
+#subset data
+female_ids <- c(0,1,2,3,7,8,12,13,20)
+survey_female <- filter(survey_female, what_is_your_participant_number_id %in% female_ids)
+
+male_ids <- c(4,5,9,10,11,14,15,16,17,18,19)
+survey_male <- filter(survey_male, what_is_your_participant_number_id %in% male_ids)
+
+street_id <- c("test")
+ranking <- c(0)
+#create df for street ranking
+street_ranking <- data.frame(street_id,ranking)
+#delete test row
+street_ranking = street_ranking[-c(1),]
+#reset index
+rownames(street_ranking) <- NULL
+
+
+#create df for street ranking female
+street_ranking_f <- data.frame(street_id,ranking)
+#delete test row
+street_ranking_f = street_ranking_f[-c(1),]
+#reset index
+rownames(street_ranking_f) <- NULL
+
+#create df for street ranking male
+street_ranking_m <- data.frame(street_id,ranking)
+#delete test row
+street_ranking_m = street_ranking_m[-c(1),]
+#reset index
+rownames(street_ranking_m) <- NULL
+
+#calculate mean for ranking and create df to merge in main df
+judd <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_judd_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_11", ranking=judd)
+
+cromer <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_cromer_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_8", ranking=cromer)
+
+loxham <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_loxham_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_12", ranking=loxham)
+
+argyle <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square)
+street_ranking <- street_ranking %>% add_row (street_id="street_1", ranking=argyle)
+
+argyle_sh <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square_short)
+street_ranking <- street_ranking %>% add_row (street_id="street_2", ranking=argyle_sh)
+
+belgrove <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_belgrove_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_4", ranking=belgrove)
+
+euston <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_euston_rd)
+street_ranking <- street_ranking %>% add_row (street_id="street_9", ranking=euston)
+
+pancras_1 <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section1)
+street_ranking <- street_ranking %>% add_row (street_id="street_14", ranking=pancras_1)
+
+pancras_2 <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section_2)
+street_ranking <- street_ranking %>% add_row (street_id="street_15", ranking=pancras_2)
+
+goodsway <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_goods_way)
+street_ranking <- street_ranking %>% add_row (street_id="street_10", ranking=goodsway)
+
+york <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_york_way)
+street_ranking <- street_ranking %>% add_row (street_id="street_18", ranking=york)
+
+wharfdale <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_wharfdale_rd)
+street_ranking <- street_ranking %>% add_row (street_id="street_17", ranking=wharfdale)
+
+balfe <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_balfe_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_3", ranking=balfe)
+
+caledonian <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_caledonian_rd)
+street_ranking <- street_ranking %>% add_row (street_id="street_5", ranking=caledonian)
+
+northdown <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_northdown_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_13", ranking=northdown)
+
+collier <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_collier_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_7", ranking=collier)
+
+calshot <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_calshot_st)
+street_ranking <- street_ranking %>% add_row (street_id="street_6", ranking=calshot)
+
+pentonville <- mean(survey$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pentonville_rd)
+street_ranking <- street_ranking %>% add_row (street_id="street_16", ranking=pentonville)
+
+route_id <- route_id %>% 
+  left_join(street_ranking,
+            by = "street_id")
+
+#### FEMALE
+
+#calculate mean for ranking and create df to merge in main df
+judd <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_judd_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_11", ranking=judd)
+
+cromer <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_cromer_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_8", ranking=cromer)
+
+loxham <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_loxham_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_12", ranking=loxham)
+
+argyle <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_1", ranking=argyle)
+
+argyle_sh <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square_short)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_2", ranking=argyle_sh)
+
+belgrove <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_belgrove_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_4", ranking=belgrove)
+
+euston <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_euston_rd)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_9", ranking=euston)
+
+pancras_1 <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section1)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_14", ranking=pancras_1)
+
+pancras_2 <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section_2)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_15", ranking=pancras_2)
+
+goodsway <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_goods_way)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_10", ranking=goodsway)
+
+york <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_york_way)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_18", ranking=york)
+
+wharfdale <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_wharfdale_rd)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_17", ranking=wharfdale)
+
+balfe <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_balfe_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_3", ranking=balfe)
+
+caledonian <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_caledonian_rd)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_5", ranking=caledonian)
+
+northdown <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_northdown_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_13", ranking=northdown)
+
+collier <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_collier_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_7", ranking=collier)
+
+calshot <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_calshot_st)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_6", ranking=calshot)
+
+pentonville <- mean(survey_female$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pentonville_rd)
+street_ranking_f <- street_ranking_f %>% add_row (street_id="street_16", ranking=pentonville)
+
+
+colnames(street_ranking_f)[2] <- "ranking_f"
+
+route_id <- route_id %>% 
+  left_join(street_ranking_f,
+            by = "street_id")
+
+
+
+#### FEMALE-----^
+
+#### MALE
+
+#calculate mean for ranking and create df to merge in main df
+judd <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_judd_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_11", ranking=judd)
+
+cromer <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_cromer_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_8", ranking=cromer)
+
+loxham <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_loxham_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_12", ranking=loxham)
+
+argyle <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_1", ranking=argyle)
+
+argyle_sh <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_argyle_square_short)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_2", ranking=argyle_sh)
+
+belgrove <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_belgrove_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_4", ranking=belgrove)
+
+euston <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_euston_rd)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_9", ranking=euston)
+
+pancras_1 <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section1)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_14", ranking=pancras_1)
+
+pancras_2 <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pancras_rd_section_2)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_15", ranking=pancras_2)
+
+goodsway <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_goods_way)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_10", ranking=goodsway)
+
+york <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_york_way)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_18", ranking=york)
+
+wharfdale <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_wharfdale_rd)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_17", ranking=wharfdale)
+
+balfe <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_balfe_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_3", ranking=balfe)
+
+caledonian <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_caledonian_rd)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_5", ranking=caledonian)
+
+northdown <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_northdown_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_13", ranking=northdown)
+
+collier <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_collier_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_7", ranking=collier)
+
+calshot <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_calshot_st)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_6", ranking=calshot)
+
+pentonville <- mean(survey_male$from_1_to_5_1_being_very_unsafe_nervous_and_5_being_very_safe_calm_how_would_you_rank_this_street_pentonville_rd)
+street_ranking_m <- street_ranking_m %>% add_row (street_id="street_16", ranking=pentonville)
+
+colnames(street_ranking_m)[2] <- "ranking_m"
+
+route_id <- route_id %>% 
+  left_join(street_ranking_m,
+            by = "street_id")
+
+
+
+```
+
+```{r Parking}
+
+#data collected manually from google maps (length of parking mts)
+parking_length <- data.frame(layer = c('judd', 'cromer', 'loxham', 'argyle', 'argyle_short',
+                                'belgrove', 'euston', 'pancras_1', 'pancras_2', 'goodsway',
+                               'york','wharfdale','balfe','caledonian','northdown',
+                               'collier', 'calshot','pentonville' ),
+                 parking_length = c(0,105,0,184,23,56,0,0,0,0,0,40,213,0,65,183,86,0))
+
+#data collected manually from google maps (width of parking mts)
+parking_width <- data.frame(layer = c('judd', 'cromer', 'loxham', 'argyle', 'argyle_short',
+                                'belgrove', 'euston', 'pancras_1', 'pancras_2', 'goodsway',
+                               'york','wharfdale','balfe','caledonian','northdown',
+                               'collier', 'calshot','pentonville' ),
+                      parking_width = c(0,2.4,0,4.8,2.4,2.4,0,0,0,0,0,2.4,4.8,0,4.8,4.8,2.4,0))
+
+route_id <- route_id %>% 
+  left_join(parking_width,
+            by = "layer")
+
+#street_size_considereing parking (ATTENTION COLUMN ORDER)
+
+parking_percent <- (route_id[,20]/route_id[,16])
+
+#Use if column had been created and need to delete
+#route_id$parking_percent <- NULL
+
+#delete  column
+parking_percent$geometry <- NULL
+colnames(parking_percent)[which(names(parking_percent) == "parking_width")] <- "parking_percent"
+parking_percent <- tibble::rowid_to_column(parking_percent, "ID")
+
+route_id <- route_id %>% 
+  left_join(parking_percent,
+            by = "ID")
+
+route_id <- route_id %>% 
+  left_join(parking_length,
+            by = "layer")
+
+#street_size_considereing parking (ATTENTION COLUMN ORDER)
+#TRIED DOINGN AREA DIDNNT WORK
+#parking_area <- ((route_id[,20]) * route_id[,22])
+
+
+
+#parking_fitlerd <- route_id %>% 
+  #select(layer, street_size, parking_width, parking_percent)
+
+
+#NOT NEEDED
+####tm_shape(pk_1) +
+####    tm_dots(col = "grey")
+
+
+#subset noise data by street
+####street_id <- c("test")
+
+####for (x in my_range) {
+  #calling out street by using the id
+####    street <- route_id %>%
+####      filter(., ID==x)
+  #merging noise to the area of the street from the geometry
+####    tmp_2 <- parking_sf[street, , op = st_within]
+    
+     #save df with new name
+####  oname = paste("pk_", x, sep="")
+####  assign(oname, tmp_2)
+####}  
+    
+
+
+```
+
+```{r Noise data}
+#read in noise
+noise <- st_read(here::here("data","Road_LAeq_16h_London", "Road_LAeq_16h_London.shp"))
+
+#subset noise data 
+noise_sub <- noise[camden_isl,]
+
+#split Position column
+noise_sub[c('low', 'high')] <- str_split_fixed(noise_sub$NoiseClass, '-', 2)
+
+#noise_1 <- mutate(noiseClass = as.numeric(I_LWard_Local_count$Ii))
+
+breaks1 <- c(55,60,65,70,75)
+NoiseColours<- rev(brewer.pal(5, "RdGy"))
+
+tm_shape(noise_sub) +
+    tm_borders (col= 'White', lwd = 0.1)+
+    tm_polygons("NoiseClass",
+        style="fixed",
+        breaks=breaks1,
+        palette=NoiseColours,
+        midpoint=NA,
+        title="Noise London")
+
+#change noise level column to numeric
+noise_sub$low <- as.numeric(noise_sub$low) 
+noise_sub$high <- as.numeric(noise_sub$high) 
+
+#subset noise data by street
+street_id <- c("test")
+
+# loop for noise and streets st_within + avg formula 
+noise_level <- c(0)
+noise_level <- data.frame(street_id,noise_level)
+for (x in my_range) {
+  #calling out street by using the id
+    street <- route_id %>%
+      filter(., ID==x)
+  #merging noise to the area of the street from the geometry
+    tmp_2 <- noise_sub[street, , op = st_within]
+  #getting the average of the noise per section
+      colMax <- max(tmp_2$high, na.rm = TRUE)
+      colMin <- min(tmp_2$low, na.rm = TRUE)
+      noise_diff <- (colMax + colMin) / 2
+      oname = paste("street", x, sep="_")
+      #assign(oname, avg)
+   noise_level <- noise_level %>% add_row (street_id =oname, noise_level = noise_diff)
+}
+#delete test row
+noise_level = noise_level[-c(1),]
+#reset index
+rownames(noise_level) <- NULL
+
+#resetting ID to be able to call the streets later on more easily 
+noise_level <- tibble::rowid_to_column(noise_level, "ID")
+
+
+#add missing measurements for streets below 50
+noise_level[1, 3] = 50
+noise_level[2, 3] = 50
+noise_level[7, 3] = 50
+noise_level[8, 3] = 50
+noise_level[9, 3] = 50
+noise_level[10, 3] = 50
+noise_level[11, 3] = 50
+noise_level[12, 3] = 50
+noise_level[13, 3] = 50
+
+#delete street_id column
+noise_level$street_id <- NULL
+
+route_id <- route_id %>% 
+  left_join(noise_level,
+            by = "ID")
+
+```
+```{r Green}
+
+green <- data.frame(layer = c('judd', 'cromer', 'loxham', 'argyle', 'argyle_short',
+                                'belgrove', 'euston', 'pancras_1', 'pancras_2', 'goodsway',
+                               'york','wharfdale','balfe','caledonian','northdown',
+                               'collier', 'calshot','pentonville' ),
+                 green = c(1,0,0,1,1,0,0,0,0,1,0,0,0,0,0,0,0,0))
+
+#load the data with the ontersected areas of green and blue
+green_blue <- st_read(here::here("data", "green", "green_merged.shp"))%>%
+  st_transform(.,27700)
+
+#delete all columns that are not needed
+green_blue$area <- st_area(green_blue)
+green_blue$left <- NULL
+green_blue$top <- NULL
+green_blue$right <- NULL
+green_blue$bottom <- NULL
+green_blue$path <- NULL
+green_blue$id <- NULL
+green_blue$geometry <- NULL
+
+#add the streets that have 0 area of green and blue 
+green_blue_1 <- data.frame(layer = c('loxham', 
+                                'belgrove', 'euston', 'pancras_1', 'pancras_2',
+                               'york','wharfdale','balfe','caledonian','northdown',
+                               'collier', 'calshot'),
+                 area = c(0,0,0,0,0,0,0,0,0,0,0,0))
+#merge with dataset
+green_blue <- green_blue %>% 
+  full_join(green_blue_1,
+            by = "layer")
+
+#fill NAs
+green_blue[is.na(green_blue)] <- 0
+green_blue$area_green <- as.factor(green_blue$area.x) 
+#delete extra column
+green_blue$area.y <- NULL
+
+
+#merge with mainn dataframe
+route_id <- route_id %>% 
+  left_join(green_blue,
+            by = "layer")
+
+
+#route_id$area <- as.factor(route_id$area)
+#route_id$area_green <- as.numeric(route_id$area_green)
+
+#get rid of area in cromer and pentonville because it doesnt count & cant see when walking
+route_id[8, 24] = 0
+route_id[16, 24] = 0
+
+green_percent <- (route_id[,24]/route_id[,14])
+green_percent$geometry <- NULL
+
+
+green_percent <- tibble::rowid_to_column(green_percent, "ID")
+
+route_id <- route_id %>% 
+  left_join(green_percent,
+            by = "ID")
+
+colnames(route_id)[which(names(route_id) == "area.x.y")] <- "percent_green"
+#route_id$percent_green <- as.factor(route_id$percent_green)
+
+```
+
+```{r CSV export}
+
+# use Janitor to clean up the names.
+route_id_clean <- route_id %>%
+  clean_names()
+
+#get rid of area measurement 
+route_id_clean$area <- as.factor(route_id_clean$area) 
+
+
+#delte geom column and export df to CSV 
+
+summarized_data <- route_id_clean
+summarized_data$geometry <- NULL
+write.csv(summarized_data,"summarized_data.csv", row.names = TRUE)
+
+
+```
+
+
+```{r BREAK}
+### BREAK
+```
+
+```{r columns for Difference Maps}
+# ADD COLUMNS TO LINE_CLIPPED
+route_sub<- route_id%>%
+  dplyr::select(ranking,
+                ranking_f,
+                ranking_m,
+          means_HR,
+          female_HR,
+          male_HR,
+          ID)
+
+
+route_sub$geometry <- NULL
+
+line_clipped <- line_clipped %>% 
+  left_join(route_sub,
+            by = "ID")
+
+#getting the differences between columns
+route_id$diff_HR <- (route_id$female_HR - route_id$male_HR)
+route_id$diff_rank <- (route_id$ranking_f - route_id$ranking_m)
+
+line_clipped$diff_HR <- route_id$diff_HR
+line_clipped$diff_rank <- route_id$diff_rank
+#making all values positive from line_clipped HR is neg and pos
+line_clipped$diff_HR.abs <- abs(line_clipped$diff_HR)
+line_clipped$diff_rank.abs <- abs(line_clipped$diff_rank)
+
+```
+
+
+```{r Plot base}
+tmap_mode ("plot") #"view" if you want to make it interactive "#252525" "#e7e7e6" 
+#green "#dbeacf"
+#blue "#b2d6e2"
+
+#grey of bldgs  - #e7e7e6
+
+#BASE
+  
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = FALSE, bg.color = "transparent")+
+
+tm_shape(bldgs)+
+tm_polygons(col = "#e7e7e6", lwd = 0, alpha = 0.5)+
+  
+   tm_grid(col = "#252525", 
+          lwd = 0.2,
+          labels.show = FALSE)+
+  
+tm_shape(camden_isl)+
+tm_borders(col = "grey", lwd = 6, alpha = 0.3)+
+
+tm_shape(parks)+
+  tm_polygons(col = "black", lwd = 0, alpha = 0.2)+
+
+tm_shape(water)+
+  tm_polygons(col = "black", lwd = 0, alpha = 0.2)+
+  
+tm_shape(streetscapeProj_1)+
+  tm_lines(col = "black", lwd = 2, alpha = 0.2)+
+  
+tm_scale_bar(position = c("left", "top"))+
+  
+tm_compass(type = "arrow", position = c("left", "bottom"), size= 1.5)
+
+tmap_save(filename = "mapbase.png", 
+          width =9, 
+          height = 8, 
+          dpi=300)
+
+
+```
+
+```{r Plot base with color}
+#BASE - COLOR
+tmap_mode ("plot")
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = FALSE, bg.color = "transparent")+
+
+tm_shape(bldgs)+
+tm_polygons(col = "#e7e7e6", lwd = 0, alpha = 0.5)+
+  
+   tm_grid(col = "#252525", 
+          lwd = 0.2,
+          labels.show = FALSE)+
+  
+tm_shape(camden_isl)+
+tm_borders(col = "grey", lwd = 6, alpha = 0.3)+
+
+tm_shape(parks)+
+  tm_polygons(col = "#dbeacf", lwd = 0, alpha = 0.8)+
+
+tm_shape(water)+
+  tm_polygons(col = "#b2d6e2", lwd = 0, alpha = 0.8)+
+  
+tm_shape(streetscapeProj_1)+
+  tm_lines(col = "black", lwd = 2, alpha = 0.2)
+  
+tm_scale_bar(position = c("left", "top"))+
+  
+tm_compass(type = "arrow", position = c("left", "bottom"), size= 1.5)
+
+tmap_save(filename = "mapbase_color.png", 
+          width =9, 
+          height = 8, 
+          dpi=300)
+
+
+#tmap_save(filename = "mapbase_noscale.png", 
+ #         width =9, 
+  #        height = 8, 
+   #       dpi=300)
+```
+
+
+```{r Plot HR}
+
+hr_palette <- c("#2c7bb6","#abd9e9","#ffffbf","#fdae61")
+hr_palette_1 <- c("#2c7bb6","#abd9e9","#ffffbf","#fdae61","#d7191c")
+#2c7bb6","#abd9e9","#ffffbf","#fdae61","#d7191c
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("means_HR",lwd = 4.5, alpha = 1,palette = hr_palette_1)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=TRUE)
+    
+tmap_save(filename = "HR_all.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("female_HR",lwd = 4.5, alpha = 1, palette = hr_palette_1)+
+    tm_layout (frame = FALSE, bg.color = "transparent")
+
+tmap_save(filename = "female_HR.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("male_HR",lwd = 4.5, alpha = 1, palette = hr_palette)+
+    tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "male_HR.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+```
+
+
+```{r columns for Difference Maps}
+hr_palette_5 <- c("#d7191c","#fdae61","#ffffbf","#abd9e9","#2c7bb6")
+#d7191c #fdae61 #d7191c","#fdae61","#ffffbf","#abd9e9","#2c7bb6"
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("diff_HR.abs",lwd = 4.5, alpha = 1,palette = hr_palette_1,
+           breaks = c(0,1,2,3,4,5))+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=TRUE)
+
+tmap_save(filename = "diff_HR.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+```
+
+
+
+```{r plot RANK}
+hr_palette_r_a <- c("#fdb863","#F7D881","#E4D4E6","#8475b0")
+hr_palette_r_f <- c("#F7D881","#E4D4E6","#8475b0","#3a2866")
+hr_palette_r_m <- c("#e66101","#fdb863","#F7D881","#E4D4E6","#8475b0")
+
+#e66101","#fdb863","#F7D881", "#E4D4E6","#8475b0","#3a2866" 
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  tm_shape(line_clipped) +
+  tm_lines("ranking",lwd = 4.5, alpha = 1, palette = hr_palette_r_a)+
+    tm_layout (frame = FALSE, bg.color = "transparent")
+    
+tmap_save(filename = "ranking_all.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("ranking_f",lwd = 4.5, alpha = 1, palette = hr_palette_r_f)+
+    tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "female_ranking.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("ranking_m",lwd = 4.5, alpha = 1, palette = hr_palette_r_m)+
+    tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "male_ranking.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+```
+
+
+```{r columns for Difference Maps}
+hr_palette_r_2 <- c("#3a2866","#8475b0","#E4D4E6","#F7D881","#fdb863","#e66101")
+#e66101","#fdb863","#F7D881", "#E4D4E6","#8475b0","#3a2866" 
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(line_clipped) +
+  tm_lines("diff_rank",lwd = 4.5, alpha = 1,palette = hr_palette_r_2,
+           breaks = c(0,0.2,0.4,0.6,0.8,1,1.2))+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=TRUE)
+
+tmap_save(filename = "diff_ranking_2.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+```
+
+
+```{r Plot size of street}
+
+size_palette <- c("#ffffb2","#fecc5c","#fd8d3c","#f03b20","#bd0026")
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+     tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  tm_shape(line_clipped) +
+  tm_lines("street_size",lwd = 8, alpha = 1, palette = size_palette)+
+    tm_layout (frame = FALSE, bg.color = "transparent")
+    
+tmap_save(filename = "street_size.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+```
+
+```{r PLot trend line walk}
+#create dataframe with route numbers
+
+order_route <- data.frame(layer = c('judd', 'cromer', 'loxham', 'argyle', 'argyle_short',
+                                'belgrove', 'euston', 'pancras_1', 'pancras_2', 'goodsway',
+                               'york','wharfdale','balfe','caledonian','northdown',
+                               'collier', 'calshot','pentonville' ),
+                 order_route = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18))
+
+route_id <- route_id %>% 
+  left_join(order_route,
+            by = "layer")
+
+
+ggplot(route_id, aes(x=order_route, y=means_HR)) +
+  geom_line()
+```
+
+```{r Plot hexagrid}
+
+tmap_mode ("plot")
+
+hexagrid <- st_read(here::here("data","route", "grid.shp"))%>%
+  st_transform(.,27700)
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(hexagrid) +
+  tm_polygons(col = "black", lwd = 0.5, alpha = 0)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+tmap_save(filename = "grid.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+route_offset <- st_read(here::here("data","route", "route.shp"))%>%
+  st_transform(.,27700)
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(route_offset) +
+  tm_lines(col = "red", lwd = 1, alpha = 1)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+tmap_save(filename = "routeoffset.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(route_line_hexa) +
+  tm_polygons(col = "yellow", lwd = 0, alpha = 0.4)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+tmap_save(filename = "highlight_route.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+palette_distinct <- c("#e66101","#e66101","#e5c494","#e66101","#ffd92f",
+                      "#fc8d62","#fc8d62","#e5c494","#fc8d62","#fc8d62",
+                      "#e5c494", 
+                      "#66c2a5","#fc8d62","#8da0cb","#e78ac3","#a6d854",
+                      "#ffd92f","#e5c494")
+tm_shape(bg)+
+  tm_polygons(col = "white", lwd = 0, alpha = 0)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+   tm_grid(col = "white", 
+          lwd = 0,
+          labels.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+tm_shape(route_id) +
+  tm_polygons("street_id",palette = palette_distinct, lwd = 1, alpha = 1)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+
+tmap_save(filename = "route_colors.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+```
+
+```{r Plot Area map}
+
+tm_shape(wards)+
+  tm_polygons(col = "white", lwd = 0.5, alpha = 0)+
+  tm_layout (frame = FALSE, bg.color = "transparent")+
+
+tm_shape(camden_isl) +
+  tm_polygons(col = "orange", lwd = 2, alpha = 1)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+
+tmap_save(filename = "wards_map.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+tmap_mode ("view")
+
+tm_shape(camden_isl) +
+  tm_polygons(col = "orange", lwd = 0, alpha = .1)+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)+
+
+
+
+
+tm_shape(route_line) +
+  tm_lines(col = "red", lwd = 3, alpha = 1, )+
+  tm_layout (bg.color = "transparent")+
+  tm_legend(show=FALSE)
+
+
+
+```
+
+```{r BREAK}
+```
+
+```{r P.2 Dataframe subsets}
+#datasubset 
+Regressiondata2<- route_id%>%
+  dplyr::select(ranking,
+                ranking_f,
+                ranking_m,
+          means_HR,
+          female_HR,
+          male_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+#delete column geomety + make areas numeric / lose unit
+Regressiondata2$geometry <- NULL
+Regressiondata2$area <- as.numeric(Regressiondata2$area)
+Regressiondata2$percent_green <- as.numeric(Regressiondata2$percent_green)
+
+#ALL no female or male
+Regressiondata_all<- route_id%>%
+  dplyr::select(ranking,
+          means_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+#delete column geomety + make areas numeric / lose unit
+Regressiondata_all$geometry <- NULL
+Regressiondata_all$area <- as.numeric(Regressiondata_all$area)
+Regressiondata_all$percent_green <- as.numeric(Regressiondata_all$percent_green)
+
+
+#FEMALE 
+Regressiondata_f<- route_id%>%
+  dplyr::select(ranking_f,
+          female_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+#delete column geomety + make areas numeric / lose unit
+Regressiondata_f$geometry <- NULL
+Regressiondata_f$area <- as.numeric(Regressiondata_f$area)
+Regressiondata_f$percent_green <- as.numeric(Regressiondata_f$percent_green)
+
+
+#MALE 
+Regressiondata_m<- route_id%>%
+  dplyr::select(ranking_m,
+          male_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+#delete column geomety + make areas numeric / lose unit
+Regressiondata_m$geometry <- NULL
+Regressiondata_m$area <- as.numeric(Regressiondata_m$area)
+Regressiondata_m$percent_green <- as.numeric(Regressiondata_m$percent_green)
+
+
+
+
+
+#datasubset HR all
+Regressiondata_variables_hr<- route_id%>%
+  dplyr::select(means_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables_hr$geometry <- NULL
+Regressiondata_variables_hr$area <- as.numeric(Regressiondata_variables_hr$area)
+Regressiondata_variables_hr$percent_green <- as.numeric(Regressiondata_variables_hr$percent_green)
+
+#datasubset HR female
+Regressiondata_variables_hr_f<- route_id%>%
+  dplyr::select(female_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables_hr_f$geometry <- NULL
+Regressiondata_variables_hr_f$area <- as.numeric(Regressiondata_variables_hr_f$area)
+Regressiondata_variables_hr_f$percent_green <- as.numeric(Regressiondata_variables_hr_f$percent_green)
+
+#datasubset HR male
+Regressiondata_variables_hr_m<- route_id%>%
+  dplyr::select(male_HR,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables_hr_m$geometry <- NULL
+Regressiondata_variables_hr_m$area <- as.numeric(Regressiondata_variables_hr_m$area)
+Regressiondata_variables_hr_m$percent_green <- as.numeric(Regressiondata_variables_hr_m$percent_green)
+
+
+
+
+
+#datasubset rank all
+Regressiondata_variables<- route_id%>%
+  dplyr::select(ranking,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables$geometry <- NULL
+Regressiondata_variables$area <- as.numeric(Regressiondata_variables$area)
+Regressiondata_variables$percent_green <- as.numeric(Regressiondata_variables$percent_green)
+
+#datasubset rank female
+Regressiondata_variables_rank_f<- route_id%>%
+  dplyr::select(ranking_f,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables_rank_f$geometry <- NULL
+Regressiondata_variables_rank_f$area <- as.numeric(Regressiondata_variables_rank_f$area)
+Regressiondata_variables_rank_f$percent_green <- as.numeric(Regressiondata_variables_rank_f$percent_green)
+
+#datasubset rank male
+Regressiondata_variables_rank_m<- route_id%>%
+  dplyr::select(ranking_m,
+          elev_alt_00,
+         sidewalk_size,
+         street_size,
+         area,
+         noise_level,
+         parking_percent,
+         percent_green)
+
+
+Regressiondata_variables_rank_m$geometry <- NULL
+Regressiondata_variables_rank_m$area <- as.numeric(Regressiondata_variables_rank_m$area)
+Regressiondata_variables_rank_m$percent_green <- as.numeric(Regressiondata_variables_rank_m$percent_green)
+```
+
+```{r Correlation Matrices}
+corMatrix <- stats::cor(Regressiondata_all, method = "pearson") 
+ggcorrplot(corMatrix, method = "circle", colors = c("orangered", "#FFFFBF", "deepskyblue3"))
+
+corMatrix <- stats::cor(Regressiondata_f, method = "pearson") 
+ggcorrplot(corMatrix, method = "circle", colors = c("orangered", "#FFFFBF", "deepskyblue3"))
+
+corMatrix <- stats::cor(Regressiondata_m, method = "pearson") 
+ggcorrplot(corMatrix, method = "circle", colors = c("orangered", "#FFFFBF", "deepskyblue3"))
+
+```
+
+```{r Descriptive statistics}
+descrip_stats <- describe(Regressiondata2)
+write.csv(descrip_stats,"descrip_stats.csv", row.names = TRUE)
+```
+
+
+```{r P.2 Regression Models}
+# MODEL A.1 
+model_hr_all <- lm(means_HR ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+                noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+p_values <- tidy(model_hr_all)
+write.csv(p_values,"p_values_all_HR.csv", row.names = TRUE)
+summary <- glance(model_hr_all)
+write.csv(summary,"summary_all_HR.csv", row.names = TRUE)
+check_model(model_hr_all)
+ggsave("assumptions_all_hr.png", width = 20, height = 12, dpi = 300)
+
+#MODEL A.2
+model_hr_f <- lm(female_HR ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+                noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+p_values <- tidy(model_hr_f)
+write.csv(p_values,"p_values_f_HR.csv", row.names = TRUE)
+summary <- glance(model_hr_f)
+write.csv(summary,"summary_f_HR.csv", row.names = TRUE)
+check_model(model_hr_f)
+ggsave("assumptions_f_hr.png", width = 20, height = 12, dpi = 300)
+
+#MODEL A.3
+model_hr_m <- lm(male_HR ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+                noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+p_values <- tidy(model_hr_m)
+write.csv(p_values,"p_values_m_HR.csv", row.names = TRUE)
+summary <- glance(model_hr_m)
+write.csv(summary,"summary_m_HR.csv", row.names = TRUE)
+check_model(model_hr_m)
+ggsave("assumptions_m_hr.png", width = 20, height = 12, dpi = 300)
+
+
+# MODEL B.1
+model_rank_all <- lm(ranking ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+              noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_all)
+write.csv(p_values,"p_values_all_rank.csv", row.names = TRUE)
+summary <- glance(model_rank_all)
+write.csv(summary,"summary_all_rank.csv", row.names = TRUE)
+check_model(model_rank_all)
+ggsave("assumptions_all_rank.png", width = 20, height = 12, dpi = 300)
+
+# MODEL B.2
+model_rank_f <- lm(ranking_f ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+              noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_f)
+write.csv(p_values,"p_values_f_rank.csv", row.names = TRUE)
+summary <- glance(model_rank_f)
+write.csv(summary,"summary_f_rank.csv", row.names = TRUE)
+check_model(model_rank_f)
+ggsave("assumptions_f_rank.png", width = 20, height = 12, dpi = 300)
+
+#MODEL B.3
+model_rank_m <- lm(ranking_m ~ elev_alt_00 + 
+               sidewalk_size + street_size + area + 
+              noise_level + parking_percent +
+               percent_green, data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_m)
+write.csv(p_values,"p_values_m_rank.csv", row.names = TRUE)
+summary <- glance(model_rank_m)
+write.csv(summary,"summary_m_rank.csv", row.names = TRUE)
+check_model(model_rank_m)
+ggsave("assumptions_m_rank.png", width = 20, height = 12, dpi = 300)
+
+
+# MODEL C.1 
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_hr <- regsubsets(means_HR~., data = Regressiondata_variables_hr, nvmax = 7)
+summary(bestmodel_hr)
+
+res.sum <- summary(bestmodel_hr)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+
+#regression model
+model_hr_sub <- lm(means_HR ~ elev_alt_00 +
+               percent_green + parking_percent, data = Regressiondata2)
+
+p_values <- tidy(model_hr_sub)
+write.csv(p_values,"p_values_all_HR_sub.csv", row.names = TRUE)
+summary <- glance(model_hr_sub)
+write.csv(summary,"summary_all_HR_sub.csv", row.names = TRUE)
+check_model(model_hr_sub)
+ggsave("assumptions_all_hr_sub.png", width = 20, height = 12, dpi = 300)
+
+#MODEL C.2
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_hr_f <- regsubsets(female_HR~., data = Regressiondata_variables_hr_f, nvmax = 7)
+summary(bestmodel_hr_f)
+
+res.sum <- summary(bestmodel_hr_f)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+
+#regression model
+model_hr_f_sub <- lm(female_HR ~ elev_alt_00 +
+               percent_green + parking_percent, data = Regressiondata2)
+
+p_values <- tidy(model_hr_f_sub)
+write.csv(p_values,"p_values_f_HR_sub.csv", row.names = TRUE)
+summary <- glance(model_hr_f_sub)
+write.csv(summary,"summary_f_HR_sub.csv", row.names = TRUE)
+check_model(model_hr_f_sub)
+ggsave("assumptions_f_hr_sub.png", width = 20, height = 12, dpi = 300)
+
+#MODEL C.3
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_hr_m <- regsubsets(male_HR~., data = Regressiondata_variables_hr_m, nvmax = 7)
+summary(bestmodel_hr_m)
+
+res.sum <- summary(bestmodel_hr_m)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+
+#regression model
+model_hr_m_sub <- lm(male_HR ~ elev_alt_00 +  
+               percent_green + street_size, data = Regressiondata2)
+
+p_values <- tidy(model_hr_m_sub)
+write.csv(p_values,"p_values_m_HR_sub.csv", row.names = TRUE)
+summary <- glance(model_hr_m_sub)
+write.csv(summary,"summary_m_HR_sub.csv", row.names = TRUE)
+check_model(model_hr_m_sub)
+ggsave("assumptions_m_hr_sub.png", width = 20, height = 12, dpi = 300)
+
+
+
+### MODEL D.1
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_rank <- regsubsets(ranking~., data = Regressiondata_variables, nvmax = 7)
+summary(bestmodel_rank)
+
+res.sum <- summary(bestmodel_rank)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+
+#regression model
+model_rank_all_sub <- lm(ranking ~ elev_alt_00 + street_size +
+                           sidewalk_size,
+                            
+                         data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_all_sub)
+write.csv(p_values,"p_values_all_rank_sub.csv", row.names = TRUE)
+summary <- glance(model_rank_all_sub)
+write.csv(summary,"summary_all_rank_sub.csv", row.names = TRUE)
+check_model(model_rank_all_sub)
+ggsave("assumptions_all_rank_sub.png", width = 20, height = 12, dpi = 300)
+
+### MODEL D.2
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_rank_f <- regsubsets(ranking_f~., data = Regressiondata_variables_rank_f, nvmax = 7)
+summary(bestmodel_rank_f)
+
+res.sum <- summary(bestmodel_rank_f)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+#regression model
+model_rank_f_sub <- lm(ranking_f ~ elev_alt_00 + parking_percent, data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_f_sub)
+write.csv(p_values,"p_values_f_rank_sub.csv", row.names = TRUE)
+summary <- glance(model_rank_f_sub)
+write.csv(summary,"summary_f_rank_sub.csv", row.names = TRUE)
+check_model(model_rank_f_sub)
+ggsave("assumptions_f_rank_sub.png", width = 20, height = 12, dpi = 300)
+
+
+
+###MODEL D.3
+#perform regsubsets to get the best performing model and fix assumptions
+bestmodel_rank_m <- regsubsets(ranking_m~., data = Regressiondata_variables_rank_m, nvmax = 7)
+summary(bestmodel_rank_m)
+
+res.sum <- summary(bestmodel_rank_m)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic)
+)
+#regression model
+
+model_rank_m_sub <- lm(ranking_m ~ elev_alt_00 + 
+               sidewalk_size + street_size, data = Regressiondata2)
+
+#show the summary of those outputs
+p_values <- tidy(model_rank_m_sub)
+write.csv(p_values,"p_values_m_rank_sub.csv", row.names = TRUE)
+summary <- glance(model_rank_m_sub)
+write.csv(summary,"summary_m_rank_sub.csv", row.names = TRUE)
+check_model(model_rank_m_sub)
+ggsave("assumptions_m_rank_sub.png", width = 20, height = 12, dpi = 300)
+
+
+```
+
+```{r BREAK}
+
+```
+
+```{r}
+  
+#extract goodsway
+argyle <- route_id[1, ]
+
+st_write(argyle, "argyle_area.shp")
+
+
+
+```
+
+
+
+
+```{r}
+tmap_mode ("plot")
+
+#read in box for argyle zoom (name of the file is fine changed streets)
+box_argyle <- st_read(here::here("data","box_goodway.shp"))%>%
+  st_transform(.,27700)
+
+#extract goodsway
+argyle <- route_id[1, ]
+
+
+  
+tm_shape(box_argyle)+
+  tm_borders(col = "black", lwd = 0.2, alpha = 1)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+tm_shape(bldgs)+
+tm_borders(col = "black", lwd = 1, alpha = 1)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(streetscapeProj_1)+
+  tm_lines(col = "black", lwd = 2, alpha = 0.2)+
+  
+tm_shape(parks)+
+  tm_polygons(col = "#dbeacf", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+  
+
+
+tmap_save(filename = "bg_good.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+
+#HEART RATE
+
+tm_shape(box_argyle)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  
+tm_shape(pt_19)+
+  tm_dots("heart_rate_bpm", size= 0.05,palette = "Reds",
+          legend.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+
+tmap_save(filename = "HR.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+#Altitude
+
+tm_shape(box_argyle)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  
+tm_shape(pt_19)+
+  tm_dots("altitude_meters", size= 0.05,palette = "Blues",
+          legend.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "Altitude.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+#Area
+
+tm_shape(argyle)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(argyle)+
+tm_borders(col = "black", lwd = 1, alpha = 1)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  tm_shape(parks)+
+  tm_polygons(col = "#dbeacf", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "area.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+#noise
+
+tm_shape(box_argyle)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+  
+tm_shape(noise_sub) +
+    tm_polygons("NoiseClass",
+        style="fixed",
+        breaks=breaks1,
+        palette=NoiseColours,
+        midpoint=NA,
+        legend.show = FALSE)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+
+tmap_save(filename = "noise.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+
+#NATURE
+tm_shape(box_goods)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(parks)+
+  tm_polygons(col = "#dbeacf", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(water)+
+  tm_polygons(col = "#b2d6e2", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "nature.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+
+
+#NATURE B&W
+tm_shape(box_goods)+
+  tm_borders(col = "black", lwd = 0, alpha = 0.8)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(parks)+
+  tm_polygons(col = "black", lwd = 0, alpha = 0.4)+
+  tm_layout (frame = TRUE, bg.color = "transparent")+
+
+tm_shape(water)+
+  tm_polygons(col = "black", lwd = 0, alpha = 0.4)+
+  tm_layout (frame = TRUE, bg.color = "transparent")
+
+tmap_save(filename = "nature_bn.png", 
+          width =9, 
+          height = 8, 
+          dpi=300,
+          bg="transparent")
+
+```
+
+
